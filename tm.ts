@@ -4,6 +4,9 @@ import { join } from 'node:path';
 import { promises as fs } from 'node:fs';
 import { simpleGit, SimpleGit } from 'simple-git';
 import { Octokit } from '@octokit/rest';
+import packageJson from './package.json' assert { type: 'json' };
+
+const VERSION = packageJson.version;
 
 interface PostHookConfig {
   hooks: string[];
@@ -649,6 +652,11 @@ async function switchWorktree(branchName: string): Promise<void> {
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0];
+
+  if (command === '--version' || command === '-v') {
+    console.log(VERSION);
+    process.exit(0);
+  }
   
   switch (command) {
     case 'clone':
@@ -723,6 +731,9 @@ async function main(): Promise<void> {
       console.error('  prune              Remove orphaned worktrees');
       console.error('  sync               Pull latest changes to all worktrees');
       console.error('  switch <name>      Output worktree path (for cd wrapper)');
+      console.error('');
+      console.error('Options:');
+      console.error('  --version, -v      Show version');
       process.exit(1);
   }
 }
