@@ -1,18 +1,30 @@
 {
-  "name": "tm",
+  "name": "yawtm",
   "version": "1.0.0",
   "description": "A custom git worktree manager",
   "type": "module",
-  "main": "tm.ts",
+  "main": "./dist/tm.js",
   "bin": {
-    "tm": "./tm.ts"
+    "tm": "dist/tm.js"
   },
+  "files": [
+    "dist/",
+    "README.md",
+    "LICENSE"
+  ],
   "scripts": {
     "start": "bun run tm.ts",
     "build": "bun build tm.ts --outdir ./dist --target bun",
-    "dev": "bun run tm.ts"
+    "dev": "bun run tm.ts",
+    "compile": "bun build --compile --target=bun-darwin-arm64 tm.ts --outfile ./dist/tm-darwin-arm64 && bun build --compile --target=bun-linux-x64 tm.ts --outfile ./dist/tm-linux-x64",
+    "prepublishOnly": "bun run build"
   },
-  "keywords": ["git", "worktree", "manager"],
+  "keywords": [
+    "git",
+    "worktree",
+    "manager",
+    "cli"
+  ],
   "author": "",
   "license": "MIT",
   "devDependencies": {

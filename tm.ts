@@ -317,6 +317,335 @@ async function remove(branchName: string, options: RemoveOptions = {}): Promise<
   }
 }
 
+interface WorktreeInfo {
+  path: string;
+  branch: string;
+  isBare: boolean;
+  exists: boolean;
+}
+
+async function getBarePath(): Promise<string | null> {
+  const currentPath = process.cwd();
+  
+  if (await directoryExists(join(currentPath, '.bare'))) {
+    return join(currentPath, '.bare');
+  }
+  
+  const parentPath = join(currentPath, '..');
+  const parentBarePath = join(parentPath, '.bare');
+  
+  if (await directoryExists(parentBarePath)) {
+    return parentBarePath;
+  }
+  
+  return null;
+}
+
+async function listWorktrees(): Promise<void> {
+  const barePath = await getBarePath();
+  
+  if (!barePath) {
+    console.error('Not in a tm-managed repository (no .bare directory found)');
+    process.exit(1);
+  }
+  
+  try {
+    const bareGit = simpleGit({
+      baseDir: barePath,
+      binary: 'git'
+    });
+    
+    // Get worktree list
+    const worktreeOutput = await bareGit.raw(['worktree', 'list', '--porcelain']);
+    const worktrees: WorktreeInfo[] = [];
+    
+    const entries = worktreeOutput.trim().split('\n\n');
+    for (const entry of entries) {
+      const lines = entry.split('\n');
+      const pathLine = lines.find(l => l.startsWith('worktree '));
+      const branchLine = lines.find(l => l.startsWith('branch '));
+      const bareLine = lines.find(l => l === 'bare');
+      
+      if (pathLine) {
+        const path = pathLine.replace('worktree ', '');
+        const branch = branchLine ? branchLine.replace('branch ', '').replace('refs/heads/', '') : '(detached)';
+        const isBare = !!bareLine;
+        const exists = await directoryExists(path);
+        
+        worktrees.push({ path, branch, isBare, exists });
+      }
+    }
+    
+    const actualRepoPath = barePath.replace('/.bare', '');
+    const currentCwd = process.cwd();
+    
+    console.log('Worktrees:');
+    console.log('');
+    
+    for (const wt of worktrees) {
+      if (wt.isBare) continue;
+      
+      const branchName = wt.branch;
+      const worktreeGit = simpleGit({ baseDir: wt.path, binary: 'git' });
+      
+      // Check status
+      let status = '';
+      try {
+        const statusSummary = await worktreeGit.status();
+        if (statusSummary.files.length > 0) {
+          status = ` [${statusSummary.files.length} modified]`;
+        }
+      } catch {
+        // Ignore status errors
+      }
+      
+      // Check if ahead/behind
+      let syncStatus = '';
+      try {
+        const branchSummary = await worktreeGit.branch(['-v']);
+        const currentBranchInfo = branchSummary.current;
+        if (currentBranchInfo) {
+          // Check if ahead or behind
+          try {
+            const revParse = await worktreeGit.raw(['rev-parse', '--abbrev-ref', '@{upstream}']);
+            if (revParse.trim()) {
+              const aheadBehind = await worktreeGit.raw(['rev-list', '--left-right', '--count', `HEAD...@{upstream}`]);
+              const [ahead, behind] = aheadBehind.trim().split('\t').map(Number);
+              if (ahead > 0 && behind > 0) {
+                syncStatus = ` [ahead ${ahead}, behind ${behind}]`;
+              } else if (ahead > 0) {
+                syncStatus = ` [ahead ${ahead}]`;
+              } else if (behind > 0) {
+                syncStatus = ` [behind ${behind}]`;
+              }
+            }
+          } catch {
+            // No upstream configured
+          }
+        }
+      } catch {
+        // Ignore branch errors
+      }
+      
+      // Mark current worktree
+      const isCurrent = currentCwd.startsWith(wt.path);
+      const marker = isCurrent ? '* ' : '  ';
+      
+      // Mark if directory doesn't exist (orphaned)
+      const orphanMarker = wt.exists ? '' : ' [ORPHANED]';
+      
+      console.log(`${marker}${branchName}${status}${syncStatus}${orphanMarker}`);
+      console.log(`    ${wt.path}`);
+      console.log('');
+    }
+  } catch (error) {
+    console.error(`List failed: ${(error as Error).message}`);
+    process.exit(1);
+  }
+}
+
+async function addWorktree(branchName: string): Promise<void> {
+  const barePath = await getBarePath();
+  
+  if (!barePath) {
+    console.error('Not in a tm-managed repository (no .bare directory found)');
+    process.exit(1);
+  }
+  
+  const actualRepoPath = barePath.replace('/.bare', '');
+  const branchPath = join(actualRepoPath, branchName);
+  
+  if (await directoryExists(branchPath)) {
+    console.error(`Worktree ${branchName} already exists`);
+    process.exit(1);
+  }
+  
+  try {
+    const bareGit = simpleGit({
+      baseDir: barePath,
+      binary: 'git'
+    });
+    
+    // Check if branch exists (locally or remotely)
+    const { all: allBranches } = await bareGit.branch(['-a']);
+    const branchExists = allBranches.some(b => 
+      b === branchName || b === `remotes/origin/${branchName}`
+    );
+    
+    if (!branchExists) {
+      console.error(`Branch '${branchName}' does not exist locally or remotely`);
+      process.exit(1);
+    }
+    
+    // If branch only exists remotely, create local tracking branch
+    const localBranches = await bareGit.branch(['-l']);
+    const hasLocalBranch = localBranches.all.includes(branchName);
+    
+    if (!hasLocalBranch) {
+      await bareGit.raw(['branch', '--track', branchName, `origin/${branchName}`]);
+    }
+    
+    // Create worktree for the branch
+    await bareGit.raw(['worktree', 'add', branchPath, branchName]);
+    
+    console.log(`Created worktree for branch '${branchName}' at ${branchPath}`);
+    
+    await runPostHooks(branchPath);
+  } catch (error) {
+    console.error(`Add worktree failed: ${(error as Error).message}`);
+    process.exit(1);
+  }
+}
+
+async function pruneWorktrees(): Promise<void> {
+  const barePath = await getBarePath();
+  
+  if (!barePath) {
+    console.error('Not in a tm-managed repository (no .bare directory found)');
+    process.exit(1);
+  }
+  
+  try {
+    const bareGit = simpleGit({
+      baseDir: barePath,
+      binary: 'git'
+    });
+    
+    // Get worktree list
+    const worktreeOutput = await bareGit.raw(['worktree', 'list', '--porcelain']);
+    const orphanedWorktrees: { path: string; branch: string }[] = [];
+    
+    const entries = worktreeOutput.trim().split('\n\n');
+    for (const entry of entries) {
+      const lines = entry.split('\n');
+      const pathLine = lines.find(l => l.startsWith('worktree '));
+      const branchLine = lines.find(l => l.startsWith('branch '));
+      const bareLine = lines.find(l => l === 'bare');
+      
+      if (pathLine && !bareLine) {
+        const path = pathLine.replace('worktree ', '');
+        const branch = branchLine ? branchLine.replace('branch ', '').replace('refs/heads/', '') : '';
+        
+        // Check if directory still exists
+        const exists = await directoryExists(path);
+        if (!exists) {
+          orphanedWorktrees.push({ path, branch });
+        }
+      }
+    }
+    
+    if (orphanedWorktrees.length === 0) {
+      console.log('No orphaned worktrees found');
+      return;
+    }
+    
+    console.log(`Found ${orphanedWorktrees.length} orphaned worktree(s):`);
+    for (const wt of orphanedWorktrees) {
+      console.log(`  - ${wt.branch} (${wt.path})`);
+    }
+    
+    // Remove orphaned worktrees
+    for (const wt of orphanedWorktrees) {
+      try {
+        await bareGit.raw(['worktree', 'remove', wt.path]);
+        console.log(`Pruned orphaned worktree: ${wt.branch}`);
+      } catch (error) {
+        console.error(`Failed to prune ${wt.branch}: ${(error as Error).message}`);
+      }
+    }
+  } catch (error) {
+    console.error(`Prune failed: ${(error as Error).message}`);
+    process.exit(1);
+  }
+}
+
+async function syncWorktrees(): Promise<void> {
+  const barePath = await getBarePath();
+  
+  if (!barePath) {
+    console.error('Not in a tm-managed repository (no .bare directory found)');
+    process.exit(1);
+  }
+  
+  try {
+    const bareGit = simpleGit({
+      baseDir: barePath,
+      binary: 'git'
+    });
+    
+    // First fetch all updates
+    console.log('Fetching updates from origin...');
+    await bareGit.fetch(['origin']);
+    
+    // Get worktree list
+    const worktreeOutput = await bareGit.raw(['worktree', 'list', '--porcelain']);
+    const worktrees: { path: string; branch: string }[] = [];
+    
+    const entries = worktreeOutput.trim().split('\n\n');
+    for (const entry of entries) {
+      const lines = entry.split('\n');
+      const pathLine = lines.find(l => l.startsWith('worktree '));
+      const branchLine = lines.find(l => l.startsWith('branch '));
+      const bareLine = lines.find(l => l === 'bare');
+      
+      if (pathLine && !bareLine) {
+        const path = pathLine.replace('worktree ', '');
+        const branch = branchLine ? branchLine.replace('branch ', '').replace('refs/heads/', '') : '';
+        worktrees.push({ path, branch });
+      }
+    }
+    
+    console.log(`\nSyncing ${worktrees.length} worktree(s)...\n`);
+    
+    for (const wt of worktrees) {
+      const worktreeGit = simpleGit({ baseDir: wt.path, binary: 'git' });
+      
+      try {
+        // Check if there are uncommitted changes
+        const status = await worktreeGit.status();
+        if (status.files.length > 0) {
+          console.log(`⚠️  ${wt.branch}: Skipped (uncommitted changes)`);
+          continue;
+        }
+        
+        // Try to pull
+        await worktreeGit.pull();
+        console.log(`✓ ${wt.branch}: Synced`);
+      } catch (error) {
+        console.log(`✗ ${wt.branch}: Failed - ${(error as Error).message}`);
+      }
+    }
+    
+    console.log('\nSync complete');
+  } catch (error) {
+    console.error(`Sync failed: ${(error as Error).message}`);
+    process.exit(1);
+  }
+}
+
+async function switchWorktree(branchName: string): Promise<void> {
+  const barePath = await getBarePath();
+  
+  if (!barePath) {
+    console.error('Not in a tm-managed repository (no .bare directory found)');
+    process.exit(1);
+  }
+  
+  const actualRepoPath = barePath.replace('/.bare', '');
+  const branchPath = join(actualRepoPath, branchName);
+  
+  if (!(await directoryExists(branchPath))) {
+    console.error(`Worktree '${branchName}' does not exist`);
+    console.error(`Use 'tm add ${branchName}' to create it from an existing branch`);
+    console.error(`Or use 'tm branch ${branchName}' to create a new branch`);
+    process.exit(1);
+  }
+  
+  // Output the path - useful for shell wrappers like:
+  //   cd $(tm switch branch-name)
+  console.log(branchPath);
+}
+
 async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const command = args[0];
@@ -350,13 +679,50 @@ async function main(): Promise<void> {
       await remove(args[1], { deleteBranch });
       break;
       
+    case 'list':
+      await listWorktrees();
+      break;
+      
+    case 'add':
+      if (!args[1]) {
+        console.error('Usage: tm add <branch-name>');
+        console.error('Creates worktree from existing branch');
+        process.exit(1);
+      }
+      await addWorktree(args[1]);
+      break;
+      
+    case 'prune':
+      await pruneWorktrees();
+      break;
+      
+    case 'sync':
+      await syncWorktrees();
+      break;
+      
+    case 'switch':
+      if (!args[1]) {
+        console.error('Usage: tm switch <branch-name>');
+        console.error('Outputs path to worktree (use with cd):');
+        console.error('  cd $(tm switch <branch-name>)');
+        process.exit(1);
+      }
+      await switchWorktree(args[1]);
+      break;
+      
     default:
       console.error('Usage: tm <command>');
+      console.error('');
       console.error('Commands:');
-      console.error('  clone <repo>    Clone repository with worktree structure');
-      console.error('                   Accepts URLs or "user/repo" format');
-      console.error('  branch <name>   Create new branch and worktree');
-      console.error('  rm <name> [-D]  Remove worktree (and optionally branch)');
+      console.error('  clone <repo>       Clone repository with worktree structure');
+      console.error('                      Accepts URLs or "user/repo" format');
+      console.error('  branch <name>      Create new branch and worktree');
+      console.error('  add <name>         Create worktree from existing branch');
+      console.error('  rm <name> [-D]     Remove worktree (and optionally branch)');
+      console.error('  list               List all worktrees with status');
+      console.error('  prune              Remove orphaned worktrees');
+      console.error('  sync               Pull latest changes to all worktrees');
+      console.error('  switch <name>      Output worktree path (for cd wrapper)');
       process.exit(1);
   }
 }

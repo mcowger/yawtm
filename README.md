@@ -1,19 +1,57 @@
 # tm - Git Worktree Manager
 
-A lightweight git worktree manager built with TypeScript and bun that simplifies managing multiple worktrees for a single repository.
+A lightweight git worktree manager built with TypeScript and Bun that simplifies managing multiple worktrees for a single repository.
 
 ## Installation
+
+### Quick Try (No Install)
+
+Run instantly without installing:
+
+```bash
+# Using bunx (fastest)
+bunx yawtm --help
+
+# Using npx
+npx yawtm --help
+```
+
+### Install Globally
+
+```bash
+# Via Bun (recommended)
+bun install -g yawtm
+
+# Via NPM
+npm install -g yawtm
+```
+
+### Via Compiled Binaries
+
+Download pre-built binaries from the [releases page](https://github.com/yourusername/yawtm/releases):
+
+```bash
+# macOS Apple Silicon
+curl -L -o tm https://github.com/yourusername/yawtm/releases/latest/download/tm-darwin-arm64
+
+# Linux AMD64
+curl -L -o tm https://github.com/yourusername/yawtm/releases/latest/download/tm-linux-x64
+
+chmod +x tm
+sudo mv tm /usr/local/bin/
+```
+
+### Development Setup
 
 ```bash
 # Clone this repository
 git clone <this-repo>
 cd yawtm
 
-# Install dependencies and globally using bun
+# Install dependencies
 bun install
-bun install -g
 
-# Or symlink for local development
+# Symlink for local development
 ln -s $(pwd)/tm.ts /usr/local/bin/tm
 ```
 
