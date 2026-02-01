@@ -1,0 +1,28 @@
+{
+  "name": "tm",
+  "version": "1.0.0",
+  "description": "A custom git worktree manager",
+  "type": "module",
+  "main": "tm.ts",
+  "bin": {
+    "tm": "./tm.ts"
+  },
+  "scripts": {
+    "start": "bun run tm.ts",
+    "build": "bun build tm.ts --outdir ./dist --target bun",
+    "dev": "bun run tm.ts"
+  },
+  "keywords": ["git", "worktree", "manager"],
+  "author": "",
+  "license": "MIT",
+  "devDependencies": {
+    "bun-types": "latest"
+  },
+  "engines": {
+    "bun": ">=1.0.0"
+  },
+  "dependencies": {
+    "@octokit/rest": "^22.0.1",
+    "simple-git": "^3.30.0"
+  }
+}
