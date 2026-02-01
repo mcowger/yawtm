@@ -5,10 +5,10 @@
   "type": "module",
   "main": "./dist/tm.js",
   "bin": {
-    "tm": "dist/tm.js"
+    "tm": "tm.ts"
   },
   "files": [
-    "dist/",
+    "tm.ts",
     "README.md",
     "LICENSE"
   ],
